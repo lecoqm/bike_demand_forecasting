@@ -1,0 +1,87 @@
+{
+  "dataset": {
+    "name": "UCI Bike Sharing - hour.csv",
+    "url": "https://archive.ics.uci.edu/static/public/275/bike+sharing+dataset.zip",
+    "doi": "10.24432/C5W894",
+    "license": "CC BY 4.0",
+    "sha256": "e03de4ee4ef4dc376ac6e04bf829673c6269e8eba5c60fa121640fa2f829504f",
+    "recorded_rows": 17379,
+    "unrecorded_hours": 165
+  },
+  "forecast": {
+    "horizon_hours": 1,
+    "count_availability": "Previous hourly count available immediately after that hour ends",
+    "evaluation": "Rolling one-step forecasts; fixed model during holdout",
+    "timezone": "Source local clock labels; timezone-naive"
+  },
+  "validation_start": "2012-07-01 00:00:00",
+  "test_start": "2012-10-01 00:00:00",
+  "final_training_target_end": "2012-09-30 23:00:00",
+  "selected_candidate": "HGB balanced",
+  "selection_metric": "Validation MAE",
+  "parameters": {
+    "loss": "poisson",
+    "learning_rate": 0.06,
+    "max_iter": 250,
+    "early_stopping": false,
+    "random_state": 42,
+    "max_leaf_nodes": 31,
+    "min_samples_leaf": 20,
+    "l2_regularization": 1.0
+  },
+  "features": [
+    "hour",
+    "day_of_week",
+    "is_weekend",
+    "month",
+    "year",
+    "day_of_year",
+    "lag_1h",
+    "lag_2h",
+    "lag_3h",
+    "lag_24h",
+    "lag_48h",
+    "lag_168h",
+    "rolling_mean_3h",
+    "rolling_mean_24h",
+    "rolling_mean_168h",
+    "rolling_std_24h",
+    "observations_last_24h"
+  ],
+  "coverage": [
+    {
+      "split": "train",
+      "first eligible target": "2011-01-08 00:00:00",
+      "last eligible target": "2012-06-30 23:00:00",
+      "recorded target hours": 13003,
+      "evaluated hours": 12678,
+      "coverage (%)": 97.5
+    },
+    {
+      "split": "validation",
+      "first eligible target": "2012-07-01 00:00:00",
+      "last eligible target": "2012-09-30 23:00:00",
+      "recorded target hours": 2208,
+      "evaluated hours": 2208,
+      "coverage (%)": 100.0
+    },
+    {
+      "split": "test",
+      "first eligible target": "2012-10-01 00:00:00",
+      "last eligible target": "2012-12-31 23:00:00",
+      "recorded target hours": 2168,
+      "evaluated hours": 2124,
+      "coverage (%)": 97.97
+    }
+  ],
+  "versions": {
+    "python": "3.12.14",
+    "numpy": "2.3.5",
+    "pandas": "2.2.3",
+    "scikit-learn": "1.8.0",
+    "matplotlib": "3.10.8",
+    "joblib": "1.5.3",
+    "threadpoolctl": "3.6.0"
+  },
+  "seed": 42
+}
