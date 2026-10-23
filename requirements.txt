@@ -10,3 +10,4 @@ fastapi==0.161.1
 uvicorn==0.54.0
 pydantic==2.14.1
 httpx2==2.16.0
+matplotlib==3.11.2
