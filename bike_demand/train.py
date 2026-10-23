@@ -1,6 +1,7 @@
 """Train and evaluate the notebook's fixed gradient-boosting configuration."""
 
 import argparse
+import hashlib
 import json
 import logging
 import platform
@@ -13,7 +14,7 @@ from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 from threadpoolctl import threadpool_limits
 
-from bike_demand.data import DATA_SHA256, load_hourly_data
+from bike_demand.data import load_hourly_data
 from bike_demand.features import make_features
 
 LOGGER = logging.getLogger(__name__)
@@ -85,6 +86,7 @@ def run_training(
 ) -> dict:
     """Prepare data, evaluate chronologically, and save the fitted model."""
     hourly = load_hourly_data(data_path)
+    data_sha256 = hashlib.sha256(data_path.read_bytes()).hexdigest()
     features = make_features(hourly)
     columns = features.columns.tolist()
     data = features.assign(target=hourly["cnt"])
@@ -114,7 +116,7 @@ def run_training(
         "test_coverage_pct": 100 * len(splits["test"]) / recorded_test_hours,
     }
     metadata = {
-        "data_sha256": DATA_SHA256,
+        "data_sha256": data_sha256,
         "validation_start": str(validation_start),
         "test_start": str(test_start),
         "training_target_end": str(fit_data.index.max()),

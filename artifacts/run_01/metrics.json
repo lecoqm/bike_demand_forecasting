@@ -1,0 +1,24 @@
+{
+  "validation": {
+    "weekly_baseline": {
+      "mae": 55.997735507246375,
+      "rmse": 97.89196342715366
+    },
+    "gradient_boosting": {
+      "mae": 33.48004310800669,
+      "rmse": 52.91287259630638
+    }
+  },
+  "test": {
+    "weekly_baseline": {
+      "mae": 70.66525423728814,
+      "rmse": 117.77963279816916
+    },
+    "gradient_boosting": {
+      "mae": 26.843662914155807,
+      "rmse": 43.798796929989415
+    }
+  },
+  "test_forecast_hours": 2124,
+  "test_coverage_pct": 97.97047970479704
+}

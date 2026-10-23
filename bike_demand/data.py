@@ -9,7 +9,11 @@ from zipfile import ZipFile
 import pandas as pd
 
 DATA_URL = "https://archive.ics.uci.edu/static/public/275/bike+sharing+dataset.zip"
-DATA_SHA256 = "e03de4ee4ef4dc376ac6e04bf829673c6269e8eba5c60fa121640fa2f829504f"
+# Original UCI bytes and the identical CSV with Git-normalized LF line endings.
+ALLOWED_SHA256 = {
+    "e03de4ee4ef4dc376ac6e04bf829673c6269e8eba5c60fa121640fa2f829504f",
+    "b03a2d02e8c10f435c43c7f0b358b7e34a003afea53dbc37f0183f2763295133",
+}
 
 
 def load_hourly_data(path: Path) -> pd.DataFrame:
@@ -25,7 +29,7 @@ def load_hourly_data(path: Path) -> pd.DataFrame:
         with ZipFile(BytesIO(archive_bytes)) as archive:
             csv_bytes = archive.read("hour.csv")
 
-    if hashlib.sha256(csv_bytes).hexdigest() != DATA_SHA256:
+    if hashlib.sha256(csv_bytes).hexdigest() not in ALLOWED_SHA256:
         raise ValueError(
             f"{path} does not match the original UCI CSV. "
             "Use the original file or remove the local copy to download it again."
