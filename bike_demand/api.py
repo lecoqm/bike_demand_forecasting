@@ -19,7 +19,7 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, NaiveDatetime, field_validator
-from threadpoolctl import threadpool_limits
+from threadpoolctl import ThreadpoolController
 
 from bike_demand.features import make_features
 from bike_demand.request_logging import jsonl_logger, request_details
@@ -114,7 +114,9 @@ def create_app(model_path: Path | None = None, log_path: Path | None = None) -> 
         app.state.estimator = bundle["estimator"]
         app.state.feature_columns = bundle["feature_columns"]
         app.state.model_version = "sha256:" + hashlib.sha256(model_bytes).hexdigest()
-        with jsonl_logger(log_path) as request_logger, threadpool_limits(limits=2):
+        controller = ThreadpoolController()
+        app.state.threadpool_controller = controller
+        with jsonl_logger(log_path) as request_logger, controller.limit(limits=1):
             app.state.request_logger = request_logger
             yield
 
@@ -179,6 +181,8 @@ def create_app(model_path: Path | None = None, log_path: Path | None = None) -> 
             history_hours=len(forecast.recent_counts),
             missing_count=sum(value is None for value in forecast.recent_counts),
         )
+        # Keep each prediction worker at one native thread across requests.
+        app.state.threadpool_controller.limit(limits=1)
         features = forecast_features(forecast)[app.state.feature_columns]
         prediction = float(app.state.estimator.predict(features)[0])
         response = ForecastResponse(
