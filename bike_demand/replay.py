@@ -6,11 +6,13 @@ import hashlib
 import json
 import logging
 import math
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
 
 import httpx2 as httpx
+import numpy as np
 import pandas as pd
 
 from bike_demand.api import HISTORY_HOURS, ForecastResponse
@@ -26,9 +28,121 @@ RECORD_COLUMNS = [
     "prediction",
     "actual",
     "weekly_baseline",
+    "latest_count",
     "missing_count",
     "error",
 ]
+
+
+@dataclass(frozen=True)
+class ReplayScenario:
+    """Parameters for deterministic fault injection into copies of the data."""
+
+    name: str = "control"
+    seed: int = 42
+    missing_rate: float = 0.1
+    invalid_rate: float = 0.2
+    demand_multiplier: float = 1.5
+    shift_start: pd.Timestamp | None = None
+
+    def __post_init__(self) -> None:
+        if self.name not in {
+            "control",
+            "missing_history",
+            "invalid_requests",
+            "demand_shift",
+        }:
+            raise ValueError(f"Unknown replay scenario: {self.name}")
+        if not isinstance(self.seed, int) or self.seed < 0:
+            raise ValueError("Scenario seed must be a nonnegative integer.")
+        for name, value in [
+            ("missing_rate", self.missing_rate),
+            ("invalid_rate", self.invalid_rate),
+        ]:
+            if not math.isfinite(value) or not 0 <= value <= 1:
+                raise ValueError(f"{name} must be a finite fraction between 0 and 1.")
+        if not math.isfinite(self.demand_multiplier) or self.demand_multiplier <= 0:
+            raise ValueError("demand_multiplier must be finite and positive.")
+
+    def shift_hour(self, start: pd.Timestamp, end: pd.Timestamp) -> pd.Timestamp:
+        """Place the default change halfway through the replay, on a whole hour."""
+        hours = int((end - start) / pd.Timedelta(hours=1))
+        value = (
+            self.shift_start
+            if self.shift_start is not None
+            else start + pd.Timedelta(hours=hours // 2)
+        )
+        if (
+            pd.isna(value)
+            or value.tz is not None
+            or value != value.floor("h")
+            or not start <= value < end
+        ):
+            raise ValueError(
+                "shift_start must be a timezone-naive whole hour inside the replay period."
+            )
+        return value
+
+
+def prepare_scenario(
+    hourly: pd.DataFrame,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    scenario: ReplayScenario,
+) -> tuple[pd.DataFrame, pd.Series, set[pd.Timestamp], dict]:
+    """Separate available history from outcomes, preserving the original dataset."""
+    history = hourly.copy(deep=True)
+    outcomes = hourly["cnt"].copy(deep=True)
+    invalid_hours = set()
+    settings = {"name": scenario.name, "seed": scenario.seed}
+    rng = np.random.default_rng(scenario.seed)
+    if scenario.name == "missing_history":
+        # One missing observation stays missing in every overlapping request.
+        candidates = history.index[
+            (history.index >= start - pd.Timedelta(hours=HISTORY_HOURS))
+            & (history.index < end - pd.Timedelta(hours=1))
+            & history["cnt"].notna()
+        ]
+        count = round(scenario.missing_rate * len(candidates))
+        selected = candidates[
+            np.sort(rng.choice(len(candidates), size=count, replace=False))
+        ]
+        history.loc[selected, "cnt"] = np.nan
+        settings.update(
+            missing_rate=scenario.missing_rate,
+            candidate_observations=len(candidates),
+            injected_observation_hours=[value.isoformat() for value in selected],
+            outcomes="Original recorded counts; only the request history is masked.",
+        )
+    elif scenario.name == "invalid_requests":
+        hours = pd.date_range(start, end, freq="h", inclusive="left")
+        count = round(scenario.invalid_rate * len(hours))
+        selected = hours[np.sort(rng.choice(len(hours), size=count, replace=False))]
+        invalid_hours = set(selected)
+        settings.update(
+            invalid_rate=scenario.invalid_rate,
+            invalid_target_hours=[value.isoformat() for value in selected],
+            corruption="Replace the most recent count with -1.",
+        )
+    elif scenario.name == "demand_shift":
+        shift_start = scenario.shift_hour(start, end)
+        affected = (history.index >= shift_start) & (history.index < end)
+        values = history.loc[affected, "cnt"]
+        if (
+            values.notna().any()
+            and float(values.max()) * scenario.demand_multiplier > 2**53 - 1
+        ):
+            raise ValueError("Demand multiplier would exceed the API count limit.")
+        shifted = np.rint(values * scenario.demand_multiplier)
+        history.loc[affected, "cnt"] = shifted
+        outcomes.loc[affected] = shifted
+        settings.update(
+            demand_multiplier=scenario.demand_multiplier,
+            shift_start=shift_start.isoformat(),
+            rounding="Nearest integer, ties to even (numpy.rint).",
+            outcomes="Synthetic counts after shift_start; missing outcomes stay missing.",
+        )
+    return history, outcomes, invalid_hours, settings
 
 
 def request_for_hour(hourly: pd.DataFrame, target_hour: pd.Timestamp) -> dict:
@@ -74,6 +188,7 @@ def predict_hour(client: httpx.Client, payload: dict, model_version: str) -> dic
         "status_code": None,
         "prediction": None,
         "weekly_baseline": payload["recent_counts"][0],
+        "latest_count": payload["recent_counts"][-1],
         "missing_count": sum(value is None for value in payload["recent_counts"]),
         "error": None,
     }
@@ -108,6 +223,7 @@ def run_replay(
     start: pd.Timestamp,
     end: pd.Timestamp,
     client: httpx.Client,
+    scenario: ReplayScenario | None = None,
 ) -> dict:
     """Write one row per clock hour, reading its outcome after the API call."""
     hourly = load_hourly_data(data_path)
@@ -116,6 +232,9 @@ def run_replay(
     )
     training_end = pd.Timestamp(model_metadata["training_target_end"])
     validate_period(hourly, start, end, training_end)
+    history, outcomes, invalid_hours, scenario_settings = prepare_scenario(
+        hourly, start, end, scenario or ReplayScenario()
+    )
     model_version = (
         "sha256:"
         + hashlib.sha256((model_dir / "model.joblib").read_bytes()).hexdigest()
@@ -130,6 +249,7 @@ def run_replay(
     hours = pd.date_range(start, end, freq="h", inclusive="left")
     metadata = {
         "simulation": True,
+        "scenario": scenario_settings,
         "completed": False,
         "started_at": datetime.now(UTC).isoformat(),
         "start": start.isoformat(),
@@ -159,11 +279,12 @@ def run_replay(
         writer = csv.DictWriter(stream, fieldnames=RECORD_COLUMNS)
         writer.writeheader()
         for target_hour in hours:
-            event = predict_hour(
-                client, request_for_hour(hourly, target_hour), model_version
-            )
+            payload = request_for_hour(history, target_hour)
+            if target_hour in invalid_hours:
+                payload["recent_counts"][-1] = -1
+            event = predict_hour(client, payload, model_version)
             # Reveal this outcome only after its prediction attempt has finished.
-            actual = hourly.at[target_hour, "cnt"]
+            actual = outcomes.at[target_hour]
             event["actual"] = int(actual) if pd.notna(actual) else None
             writer.writerow(event)
             stream.flush()

@@ -11,7 +11,7 @@ Start-Process artifacts/replays/october_day_01/monitoring/report.html
 
 The report contains model and weekly-baseline scores, service statistics,
 coverage, missing-data counts, and four plots: demand and forecasts, MAE by
-hour, client latency, and the distribution of the weekly-demand input.
+hour, client latency, and a demand-input distribution comparison.
 
 ## Outputs
 
@@ -22,12 +22,12 @@ The default directory is `artifacts/replays/october_day_01/monitoring/`:
 - `summary.json`: metrics, counts, model version, replay dates, and source hashes.
 - `metrics.csv`: model and baseline MAE and RMSE, with their shared sample count.
 - `by_hour.csv`: MAE and sample counts for each target hour of the day.
-- `input_distribution.csv`: count, mean, median, and P95 of the weekly-demand
-  input in training and replay.
+- `input_distribution.csv`: count, mean, median, and P95 of the selected
+  demand input in training and replay (`input_feature` in `summary.json`).
 
 The command reads `predictions.csv` and `metadata.json` from the replay directory.
-It also reads the existing UCI CSV at `data/hour.csv` to reconstruct the weekly
-input for eligible training targets through the recorded training cutoff. It
+It also reads the existing UCI CSV at `data/hour.csv` to reconstruct the selected
+lag input for eligible training targets through the recorded training cutoff. It
 does not download data. Use `--data-path` if the CSV is stored elsewhere.
 
 For another replay:
@@ -53,9 +53,14 @@ generated report files; the replay files remain unchanged.
   These values differ from the server processing times in API logs.
 - **Missing history:** counts remain missing rather than becoming zero. The
   percentage uses attempts whose missing-history count is known.
-- **Input comparison:** the replay's count from 168 hours earlier is compared
-  descriptively with that input in training. Calendar composition can explain
-  changes; this plot is not an automatic drift alert.
+- **Input comparison:** new replay files record `latest_count`, so the report
+  compares the count from one hour earlier (`lag_1h`) with that input in training.
+  Older files without this column use the weekly count (`lag_168h`). Negative
+  recent counts are reported as invalid and excluded from the distribution.
+  Calendar composition can explain changes; this plot is not an automatic drift alert.
+
+Injected scenarios and their settings appear in the report. Demand-shift outcomes
+are synthetic after the recorded change time; see [scenarios.md](scenarios.md).
 
 Undefined values, including metrics without eligible outcomes and percentage
 improvement over a zero-error baseline, are `null` in JSON and `n/a` in HTML.

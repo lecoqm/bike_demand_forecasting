@@ -55,6 +55,12 @@ def load_replay(replay_dir: Path) -> tuple[pd.DataFrame, dict]:
                 f"{name} must contain finite nonnegative values or missing values."
             )
         records[name] = values
+    if "latest_count" in records:
+        values = pd.to_numeric(records["latest_count"], errors="raise")
+        if (values.notna() & ~np.isfinite(values)).any():
+            raise ValueError("latest_count must be finite or missing.")
+        # Negative inputs are retained for diagnosing rejected requests.
+        records["latest_count"] = values
     for name, maximum in [("status_code", 599), ("missing_count", 168)]:
         values = records[name].dropna()
         if (values.gt(maximum) | values.ne(values.round())).any():
@@ -143,6 +149,7 @@ def summarize(
     missing = records["missing_count"]
     summary = {
         "simulation": metadata["simulation"],
+        "scenario": metadata.get("scenario", {"name": "control"}),
         "replay_completed": metadata["completed"],
         "start": metadata["start"],
         "end_exclusive": metadata["end_exclusive"],
@@ -166,6 +173,9 @@ def summarize(
             "client_latency_ms": distribution(records["client_latency_ms"]),
         },
         "data_quality": {
+            "invalid_recent_count_requests": int(records["latest_count"].lt(0).sum())
+            if "latest_count" in records
+            else None,
             "missing_outcomes": int(records["actual"].isna().sum()),
             "history_count_known_requests": int(missing.notna().sum()),
             "requests_with_missing_history": int(missing.gt(0).sum()),
@@ -207,8 +217,10 @@ def summarize(
     return summary, metrics_table, pd.DataFrame(hourly)
 
 
-def training_reference(data_path: Path, training_target_end: str) -> pd.Series:
-    """Reconstruct the weekly-lag input for the final model's eligible fit hours."""
+def training_reference(
+    data_path: Path, training_target_end: str, lag_hours: int = 168
+) -> pd.Series:
+    """Reconstruct a lag input for the final model's eligible fit hours."""
     if not data_path.is_file():
         raise FileNotFoundError(
             f"Reference CSV not found: {data_path}. Set --data-path to the existing UCI CSV."
@@ -222,21 +234,34 @@ def training_reference(data_path: Path, training_target_end: str) -> pd.Series:
         & demand.shift(1).notna()
         & weekly.notna()
     )
-    reference = weekly.loc[eligible]
+    reference = demand.shift(lag_hours).loc[eligible]
     if reference.empty:
         raise ValueError("No eligible training inputs before training_target_end.")
     return reference
 
 
 def make_plot(
-    records: pd.DataFrame, hourly: pd.DataFrame, reference: pd.Series, output_path: Path
+    records: pd.DataFrame,
+    hourly: pd.DataFrame,
+    reference: pd.Series,
+    output_path: Path,
+    scenario_name: str = "control",
+    input_lag_hours: int = 168,
 ) -> None:
     """Write four static panels without requiring a desktop or a running API."""
     figure = Figure(figsize=(12, 8), layout="constrained")
+    qualifier = " · synthetic outcomes" if scenario_name == "demand_shift" else ""
+    figure.suptitle(
+        f"Historical replay simulation · {scenario_name}{qualifier}", fontsize=13
+    )
     FigureCanvasAgg(figure)
     forecast, error, latency, inputs = figure.subplots(2, 2).flat
     for column, label, color in [
-        ("actual", "Actual", "#111827"),
+        (
+            "actual",
+            "Scenario outcome" if scenario_name == "demand_shift" else "Actual",
+            "#111827",
+        ),
         ("prediction", "Model", "#2563eb"),
         ("weekly_baseline", "Weekly baseline", "#d97706"),
     ]:
@@ -312,7 +337,8 @@ def make_plot(
         ylabel="Requests",
     )
 
-    current = records["weekly_baseline"].dropna()
+    input_column = "latest_count" if input_lag_hours == 1 else "weekly_baseline"
+    current = records[input_column].where(records[input_column].ge(0)).dropna()
     bins = np.histogram_bin_edges(
         np.concatenate([reference.to_numpy(), current.to_numpy()]), bins=20
     )
@@ -331,8 +357,8 @@ def make_plot(
                 color=color,
             )
     inputs.set(
-        title="Weekly-demand input · descriptive comparison",
-        xlabel="Count 168 hours earlier",
+        title="Demand input · descriptive comparison",
+        xlabel=f"Count {input_lag_hours} hour(s) earlier",
         ylabel="Observations (%)",
     )
     inputs.legend(fontsize=8)
@@ -364,6 +390,8 @@ def write_html(
         if summary["replay_completed"]
         else "Partial replay — scheduled hours remain in the coverage denominator"
     )
+    scenario = summary["scenario"]
+    scenario_settings = escape(json.dumps(scenario, indent=2, allow_nan=False))
     image = base64.b64encode((output_dir / "monitoring.png").read_bytes()).decode(
         "ascii"
     )
@@ -412,6 +440,12 @@ def write_html(
                 quality["history_count_known_requests"],
             ),
             ("Unexpected model versions", quality["unexpected_model_versions"]),
+            (
+                "Invalid recent counts",
+                quality["invalid_recent_count_requests"]
+                if quality["invalid_recent_count_requests"] is not None
+                else "n/a",
+            ),
         ]
     )
     html = f"""<!doctype html>
@@ -426,11 +460,14 @@ section,.card{{background:white;border:1px solid #dce3eb;border-radius:12px;padd
 .card{{margin:0}}.card strong{{display:block;font-size:27px;margin-top:8px}}.columns section{{margin:0}}
 table{{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}}th,td{{text-align:left;padding:9px 8px;border-bottom:1px solid #e5e9ef}}
 th{{color:#526174;font-weight:600}}img{{display:block;width:100%;height:auto}}code{{overflow-wrap:anywhere;font-size:12px}}
+pre{{font-size:12px;max-height:240px;overflow:auto}}summary{{cursor:pointer}}
 @media(max-width:760px){{.cards,.columns{{grid-template-columns:1fr 1fr}}.columns{{grid-template-columns:1fr}}main{{padding:0 12px}}}}
 </style><main>
 <p class="badge">HISTORICAL REPLAY SIMULATION</p><h1>Bike demand monitoring</h1>
 <p class="muted">{escape(str(summary["start"]))} to {escape(str(summary["end_exclusive"]))} (end exclusive)</p>
 <p>{escape(status)}</p>
+<p>Scenario: <strong>{escape(str(scenario["name"]))}</strong>. Injected faults are simulated; demand_shift also changes outcomes after its recorded change time.</p>
+<details><summary>Scenario settings</summary><pre>{scenario_settings}</pre></details>
 <div class="cards">
 <div class="card">Attempted / scheduled hours<strong>{coverage["attempted_hours"]} / {coverage["scheduled_hours"]}</strong></div>
 <div class="card">Prediction coverage<strong>{number(coverage["prediction_coverage_pct"], "%")}</strong></div>
@@ -441,9 +478,9 @@ th{{color:#526174;font-weight:600}}img{{display:block;width:100%;height:auto}}co
 <p class="muted">Both models use the same {coverage["paired_scored_hours"]} hours with a valid API prediction, a known outcome, and a weekly baseline. MAE and RMSE are in rentals per hour.</p>
 <p>MAE reduction versus baseline: {number(summary["performance"]["mae_improvement_pct"], "%")}.</p></section>
 <div class="columns"><section><h2>Service</h2>{service_table}</section><section><h2>Data quality</h2>{quality_table}</section></div>
-<section><h2>Replay plots</h2><img src="data:image/png;base64,{image}" alt="Demand forecasts, error by hour, client latency, and weekly-demand input distributions"></section>
-<section><h2>Weekly-demand input</h2>{input_table}
-<p class="muted">The reference uses eligible training targets through {escape(str(summary["training_target_end"]))}. Replay statistics include all attempts with a known weekly count. The comparison is descriptive; different calendar mixes can change this distribution.</p></section>
+<section><h2>Replay plots</h2><img src="data:image/png;base64,{image}" alt="Demand forecasts, error by hour, client latency, and demand input distributions"></section>
+<section><h2>Demand input · {escape(summary["input_feature"])}</h2>{input_table}
+<p class="muted">The reference uses eligible training targets through {escape(str(summary["training_target_end"]))}. Replay statistics include attempts with a known nonnegative input count. The comparison is descriptive; different calendar mixes can change this distribution.</p></section>
 <section><h2>How to read this report</h2>
 <p>Prediction coverage is valid predictions divided by all scheduled hours, including unattempted hours in a partial replay. The error rate includes rejections, transport errors, server errors, and invalid responses.</p>
 <p>Latency measures the client HTTP round trip for all attempts, including failures. It differs from server processing time. Missing values and undefined scores are shown as n/a.</p>
@@ -457,10 +494,18 @@ def run_monitoring(replay_dir: Path, data_path: Path, output_dir: Path) -> dict:
     """Generate HTML, a four-panel PNG, and machine-readable summaries."""
     records, metadata = load_replay(replay_dir)
     summary, metrics, hourly = summarize(records, metadata)
-    reference = training_reference(data_path, metadata["training_target_end"])
+    lag_hours = 1 if "latest_count" in records else 168
+    input_column = "latest_count" if lag_hours == 1 else "weekly_baseline"
+    summary["input_feature"] = f"lag_{lag_hours}h"
+    reference = training_reference(
+        data_path, metadata["training_target_end"], lag_hours
+    )
     input_rows = [
         {"population": "Training reference", **distribution(reference)},
-        {"population": "Replay", **distribution(records["weekly_baseline"])},
+        {
+            "population": "Replay",
+            **distribution(records[input_column].where(records[input_column].ge(0))),
+        },
     ]
     inputs = pd.DataFrame(input_rows)
     summary["input_distribution"] = input_rows
@@ -487,7 +532,14 @@ def run_monitoring(replay_dir: Path, data_path: Path, output_dir: Path) -> dict:
         | plot_records["model_version"].ne(metadata["model_version"])
     )
     plot_records.loc[invalid, "prediction"] = np.nan
-    make_plot(plot_records, hourly, reference, output_dir / "monitoring.png")
+    make_plot(
+        plot_records,
+        hourly,
+        reference,
+        output_dir / "monitoring.png",
+        summary["scenario"]["name"],
+        lag_hours,
+    )
     write_html(summary, metrics, inputs, output_dir)
     LOGGER.info(
         "Coverage: %s predictions / %s scheduled hours",
