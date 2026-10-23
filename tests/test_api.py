@@ -16,8 +16,9 @@ MODEL_PATH = PROJECT_DIR / "artifacts/run_01/model.joblib"
 
 
 @pytest.fixture(scope="module")
-def client():
-    with TestClient(create_app(MODEL_PATH)) as test_client:
+def client(tmp_path_factory):
+    log_path = tmp_path_factory.mktemp("api_logs") / "requests.jsonl"
+    with TestClient(create_app(MODEL_PATH, log_path=log_path)) as test_client:
         yield test_client
 
 
@@ -110,7 +111,9 @@ def test_model_remains_loaded_between_requests(tmp_path, reference_data):
     hourly, predictions = reference_data
     payload = request_for_hour(hourly, predictions.index[0])
 
-    with TestClient(create_app(model_path)) as client:
+    with TestClient(
+        create_app(model_path, log_path=tmp_path / "requests.jsonl")
+    ) as client:
         model_path.unlink()
         first = client.post("/predict", json=payload)
         second = client.post("/predict", json=payload)
