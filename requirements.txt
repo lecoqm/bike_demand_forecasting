@@ -5,3 +5,4 @@ joblib==1.5.3
 threadpoolctl==3.6.0
 pytest==9.1.1
 ruff==0.17.1
+mlflow==3.17.2
