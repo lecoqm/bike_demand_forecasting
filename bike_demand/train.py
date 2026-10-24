@@ -83,9 +83,14 @@ def run_training(
     output_dir: Path,
     validation_start: pd.Timestamp,
     test_start: pd.Timestamp,
+    test_end: pd.Timestamp | None = None,
 ) -> dict:
     """Prepare data, evaluate chronologically, and save the fitted model."""
+    if test_end is not None and test_end <= test_start:
+        raise ValueError("Test end must be after test start.")
     hourly = load_hourly_data(data_path)
+    if test_end is not None:
+        hourly = hourly.loc[hourly.index < test_end]
     data_sha256 = hashlib.sha256(data_path.read_bytes()).hexdigest()
     features = make_features(hourly)
     columns = features.columns.tolist()
@@ -120,6 +125,7 @@ def run_training(
         "validation_start": str(validation_start),
         "test_start": str(test_start),
         "training_target_end": str(fit_data.index.max()),
+        "training_target_count": len(fit_data),
         "forecast_horizon_hours": 1,
         "feature_columns": columns,
         "model_parameters": final_model.get_params(),
@@ -129,6 +135,8 @@ def run_training(
             for name in ["numpy", "pandas", "scikit-learn", "joblib", "threadpoolctl"]
         },
     }
+    if test_end is not None:
+        metadata["test_end_exclusive"] = str(test_end)
     output_dir.mkdir(parents=True, exist_ok=True)
     joblib.dump(
         {"estimator": final_model, "feature_columns": columns},
@@ -157,10 +165,20 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=Path("artifacts"))
     parser.add_argument("--validation-start", type=pd.Timestamp, default="2012-07-01")
     parser.add_argument("--test-start", type=pd.Timestamp, default="2012-10-01")
+    parser.add_argument(
+        "--test-end",
+        type=pd.Timestamp,
+        default=None,
+        help="Optional exclusive evaluation end.",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     run_training(
-        args.data_path, args.output_dir, args.validation_start, args.test_start
+        args.data_path,
+        args.output_dir,
+        args.validation_start,
+        args.test_start,
+        args.test_end,
     )
 
 

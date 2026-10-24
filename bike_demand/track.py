@@ -44,6 +44,7 @@ def run_tracked_training(
     test_start: pd.Timestamp,
     tracking_uri: str = "sqlite:///mlflow.db",
     run_name: str | None = None,
+    test_end: pd.Timestamp | None = None,
 ) -> str:
     """Train once, save files under a unique run ID, and return that ID."""
     mlflow.set_tracking_uri(tracking_uri)
@@ -60,8 +61,12 @@ def run_tracked_training(
                 "mlflow_version": mlflow.__version__,
             }
         )
+        if test_end is not None:
+            mlflow.log_param("test_end_exclusive", str(test_end))
         run_dir = output_dir / run_id
-        metrics = run_training(data_path, run_dir, validation_start, test_start)
+        metrics = run_training(
+            data_path, run_dir, validation_start, test_start, test_end
+        )
         metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
         mlflow.log_params(metadata["model_parameters"])
         mlflow.log_params(
@@ -112,6 +117,12 @@ def main() -> None:
     )
     parser.add_argument("--validation-start", type=pd.Timestamp, default="2012-07-01")
     parser.add_argument("--test-start", type=pd.Timestamp, default="2012-10-01")
+    parser.add_argument(
+        "--test-end",
+        type=pd.Timestamp,
+        default=None,
+        help="Optional exclusive evaluation end.",
+    )
     parser.add_argument("--tracking-uri", default="sqlite:///mlflow.db")
     parser.add_argument("--run-name", default=None)
     args = parser.parse_args()
@@ -123,6 +134,7 @@ def main() -> None:
         args.test_start,
         args.tracking_uri,
         args.run_name,
+        args.test_end,
     )
 
 
