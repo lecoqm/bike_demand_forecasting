@@ -21,6 +21,11 @@ from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, NaiveDatetime, field_validator
 from threadpoolctl import ThreadpoolController
 
+from bike_demand.deploy import (
+    DEFAULT_STATE_PATH,
+    checked_model_bytes,
+    selected_model,
+)
 from bike_demand.features import make_features
 from bike_demand.request_logging import jsonl_logger, request_details
 
@@ -91,11 +96,17 @@ def forecast_features(request: ForecastRequest) -> pd.DataFrame:
     return make_features(history).iloc[[-1]]
 
 
-def create_app(model_path: Path | None = None, log_path: Path | None = None) -> FastAPI:
+def create_app(
+    model_path: Path | None = None,
+    log_path: Path | None = None,
+    state_path: Path | None = None,
+) -> FastAPI:
     """Load the chosen model once, before the service accepts requests."""
-    if model_path is None:
-        model_path = Path(
-            os.environ.get("BIKE_DEMAND_MODEL_PATH", "artifacts/run_01/model.joblib")
+    if model_path is None and os.environ.get("BIKE_DEMAND_MODEL_PATH"):
+        model_path = Path(os.environ["BIKE_DEMAND_MODEL_PATH"])
+    if state_path is None:
+        state_path = Path(
+            os.environ.get("BIKE_DEMAND_DEPLOYMENT_PATH", str(DEFAULT_STATE_PATH))
         )
     if log_path is None:
         log_path = Path(
@@ -104,7 +115,8 @@ def create_app(model_path: Path | None = None, log_path: Path | None = None) -> 
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        model_bytes = model_path.read_bytes()
+        selected_path, expected_version = selected_model(state_path, model_path)
+        model_bytes = checked_model_bytes(selected_path, expected_version)
         bundle = joblib.load(BytesIO(model_bytes))
         expected_columns = forecast_features(
             ForecastRequest.model_validate(EXAMPLE_REQUEST)
